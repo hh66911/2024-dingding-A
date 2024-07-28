@@ -85,7 +85,7 @@ def evaluate_model_prophet(series_test, df_pred):
     evaluate_model(series_test, series_pred)
 
 
-def predict_to_future_lstm(model, series, months, scaler, feature_length=12, last_months=12):
+def predict_to_future_lstm(model, series, months, scaler=None, feature_length=12, last_months=12):
     import torch
     # 准备初始输入
     data, data_years, data_months, y_true = prepare_data(series, last_months)
@@ -93,7 +93,8 @@ def predict_to_future_lstm(model, series, months, scaler, feature_length=12, las
     month_next = data_months[-1]
 
     # 拼接 data, data_years, data_months
-    data = scaler.transform(data.reshape(-1, 1)).reshape(-1)
+    if scaler is not None:
+        data = scaler.transform(data.reshape(-1, 1)).reshape(-1)
     input_tensor = torch.from_numpy(data).unsqueeze(0)
     input_tensor = torch.cat(
         (input_tensor, torch.tensor(time_transform(data_years, data_months))))
@@ -129,8 +130,9 @@ def predict_to_future_lstm(model, series, months, scaler, feature_length=12, las
     # 将结果转换为numpy数组
     result = np.array(result)
 
-    result = scaler.inverse_transform(result.reshape(-1, 1)).reshape(-1)
-    y_true = scaler.inverse_transform(y_true.reshape(-1, 1)).reshape(-1)
+    if scaler is not None:
+        result = scaler.inverse_transform(result.reshape(-1, 1)).reshape(-1)
+        y_true = scaler.inverse_transform(y_true.reshape(-1, 1)).reshape(-1)
 
     pred_index = pd.date_range(
         start=series.index[-last_months], periods=months, freq='M')
@@ -141,15 +143,45 @@ def predict_to_future_lstm(model, series, months, scaler, feature_length=12, las
     return result
 
 
-def predict_to_future_arima(model, series, months=24, last_months=12):
+def predict_to_future_arima(model, series, scaler=None, months=24, last_months=12):
     forecast_start = series.index[-last_months]
     forecast_end = forecast_start + pd.DateOffset(months=months)
 
     forecast = model.predict(start=forecast_start, end=forecast_end)
 
+    if scaler is not None:
+        forecast = scaler.inverse_transform(
+            forecast.values.reshape(-1, 1)).reshape(-1)
+        series = scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+
     evaluate_model(series, forecast)
 
     return forecast
+
+
+def predict_to_future_prophet(model, series, scaler=None, months=24):
+    future = model.make_future_dataframe(periods=months, freq='M')
+    forecast = model.predict(future)
+    model.plot(forecast, include_legend=True)
+
+    y_pred = pd.Series(forecast['yhat'].values, index=forecast['ds'])
+
+    model_history = model.history
+    series_test = series[model_history.index[-1]:][1:]
+    series_test_index = series_test.index
+    y_pred = y_pred[model_history.index[-1]:][1:]
+    y_pred_index = y_pred.index
+
+    if scaler is not None:
+        y_pred = scaler.inverse_transform(
+            y_pred.values.reshape(-1, 1)).reshape(-1)
+        series_test = scaler.inverse_transform(
+            series_test.values.reshape(-1, 1)).reshape(-1)
+        y_pred = pd.Series(y_pred, index=y_pred_index)
+        series_test = pd.Series(series_test, index=series_test_index)
+
+    evaluate_model(series_test, y_pred)
 
 
 if __name__ != '__main__':
