@@ -61,6 +61,12 @@ def evaluate_model(series_origin, series_pred):
     plt.show()
 
 
+def evaluate_model_prophet(series_origin, df_pred):
+    df_pred = df_pred[['ds', 'yhat']].set_index('ds')
+    series_pred = df_pred['yhat']
+    evaluate_model(series_origin, series_pred)
+
+
 def predict_to_future_lstm(model, series, months, scaler, feature_length=12, last_months=12):
     # 准备初始输入
     data, data_years, data_months, y_true = prepare_data(series, last_months)
