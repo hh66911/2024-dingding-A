@@ -150,3 +150,7 @@ def predict_to_future_arima(model, series, months=24, last_months=12):
     evaluate_model(series, forecast)
 
     return forecast
+
+
+if __name__ != '__main__':
+    print('小助手已加载')
