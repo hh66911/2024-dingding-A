@@ -184,5 +184,42 @@ def predict_to_future_prophet(model, series, scaler=None, months=24):
     evaluate_model(series_test, y_pred)
 
 
-if __name__ != '__main__':
-    print('小助手已加载')
+def _find_best_param_worker(series, seasonal_order, param, progress_list, index):
+    import warnings
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+    warnings.filterwarnings('ignore')
+    model_arima = SARIMAX(series, order=param,
+                          seasonal_order=seasonal_order)  # 创建 SARIMA 模型对象
+    model_arima_fit = model_arima.fit(disp=False)
+    # 更新共享进度列表
+    progress_list[index] = 'Done'
+    return param, model_arima_fit.aic
+
+
+def find_best_param(series, pdq, seasonal_order):
+    import warnings
+    import time
+    import multiprocessing
+
+    manager = multiprocessing.Manager()
+    progress_list = manager.list(['Pending'] * len(pdq))
+
+    with multiprocessing.Pool(processes=4) as pool:
+        tasks = [pool.apply_async(_find_best_param_worker, args=(
+            series, seasonal_order, param, progress_list, index)) for index, param in enumerate(pdq)]
+
+        # 等待所有任务完成，并实时打印进度
+        next_print_string = print_string = 'Progress: ' + \
+            ' '.join(progress_list)
+        while any(not t.ready() for t in tasks):
+            print(next_print_string, end='\r', flush=True)
+            next_print_string = 'Progress: ' + ' '.join(progress_list)
+            if len(next_print_string) < len(print_string):
+                next_print_string += ' ' * \
+                    (len(print_string) - len(next_print_string))
+            print_string = next_print_string
+            time.sleep(1)  # 减少打印频率
+
+        # 打印最终结果并换行
+        print('\nFinal Progress:', ' '.join(progress_list))
+    warnings.filterwarnings('default')
