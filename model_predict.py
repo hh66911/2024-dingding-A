@@ -1,24 +1,41 @@
 import numpy as np
-import torch
 import pandas as pd
 from matplotlib import pyplot as plt
 from sklearn.metrics import (mean_squared_error, mean_absolute_error,
                              r2_score, mean_absolute_percentage_error)
 
 
-def read_data_series():
+def read_data_series(filter_early=True, scale=True):
     # 读取Excel文件
-    df = pd.read_excel('A1.xlsx', usecols=['销量（箱）', '金额（元）'])
+    df = pd.read_excel('A1.xlsx', usecols=['月份', '销量（箱）', '金额（元）'])
     # 去掉无数值的行
     df.dropna(inplace=True)
+
+    # 月份的格式为 yyyymm
+    df.set_index('月份', inplace=True)
+
+    if filter_early:
+        df = df[df.index >= 201401]
+        index = pd.date_range(start='2014-01', periods=len(df), freq='M')
+    else:
+        index = pd.date_range(start='2011-01', periods=len(df), freq='M')
+
     # 将数据转换为NumPy数组
     data_array = df.values
 
     data = data_array[:, 0]  # 选择销量数据
-    index = pd.date_range(start='2011-01', periods=len(data), freq='M')
-    series = pd.Series(data, index=index)
 
-    return series
+    if scale:
+        from sklearn.preprocessing import RobustScaler
+        # 创建 MinMaxScaler 的实例
+        scaler = RobustScaler()
+        # 使用 fit_transform 方法来拟合数据并转换它
+        normalized_data = scaler.fit_transform(data.reshape(-1, 1)).reshape(-1)
+        series = pd.Series(normalized_data, index=index)
+        return series, scaler
+    else:
+        series = pd.Series(data, index=index)
+        return series
 
 
 def time_transform(year=None, month=None, ):
@@ -61,13 +78,15 @@ def evaluate_model(series_origin, series_pred):
     plt.show()
 
 
-def evaluate_model_prophet(series_origin, df_pred):
+def evaluate_model_prophet(series_test, df_pred):
     df_pred = df_pred[['ds', 'yhat']].set_index('ds')
     series_pred = df_pred['yhat']
-    evaluate_model(series_origin, series_pred)
+    series_pred = series_pred[series_test.index[0]:]
+    evaluate_model(series_test, series_pred)
 
 
 def predict_to_future_lstm(model, series, months, scaler, feature_length=12, last_months=12):
+    import torch
     # 准备初始输入
     data, data_years, data_months, y_true = prepare_data(series, last_months)
     year_next = data_years[-1]
