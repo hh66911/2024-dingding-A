@@ -114,3 +114,14 @@ def predict_to_future_lstm(model, series, months, scaler, feature_length=12, las
     evaluate_model(series, series_pred)
 
     return result
+
+
+def predict_to_future_arima(model, series, months=24, last_months=12):
+    forecast_start = series.index[-last_months]
+    forecast_end = forecast_start + pd.DateOffset(months=months)
+
+    forecast = model.predict(start=forecast_start, end=forecast_end)
+
+    evaluate_model(series, forecast)
+
+    return forecast
