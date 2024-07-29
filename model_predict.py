@@ -147,13 +147,35 @@ def predict_to_future_arima(model, series, scaler=None, months=24, last_months=1
     forecast_start = series.index[-last_months]
     forecast_end = forecast_start + pd.DateOffset(months=months)
 
+    forecast: pd.Series = model.predict(start=forecast_start, end=forecast_end)
+
+    if scaler is not None:
+        scaled_forecast = scaler.inverse_transform(
+            forecast.values.reshape(-1, 1)).reshape(-1)
+        scaled_series = scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+        forecast = pd.Series(scaled_forecast, index=forecast.index)
+        series = pd.Series(scaled_series, index=series.index)
+
+    evaluate_model(series, forecast)
+
+    return forecast
+
+
+def predict_to_future_es(model, series, scaler=None, months=24, last_months=12):
+    # 使用 predict 方法来预测最后12个和未来12个月的销量
+    forecast_start = series.index[-last_months]
+    forecast_end = forecast_start + pd.DateOffset(months=months)
+
     forecast = model.predict(start=forecast_start, end=forecast_end)
 
     if scaler is not None:
-        forecast = scaler.inverse_transform(
+        scaled_forecast = scaler.inverse_transform(
             forecast.values.reshape(-1, 1)).reshape(-1)
-        series = scaler.inverse_transform(
+        scaled_series = scaler.inverse_transform(
             series.values.reshape(-1, 1)).reshape(-1)
+        forecast = pd.Series(scaled_forecast, index=forecast.index)
+        series = pd.Series(scaled_series, index=series.index)
 
     evaluate_model(series, forecast)
 
@@ -182,6 +204,8 @@ def predict_to_future_prophet(model, series, scaler=None, months=24):
         series_test = pd.Series(series_test, index=series_test_index)
 
     evaluate_model(series_test, y_pred)
+
+    return forecast
 
 
 def _find_best_param_worker(series, order, seasonal_order):
