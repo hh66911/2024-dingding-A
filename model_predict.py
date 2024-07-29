@@ -120,7 +120,7 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         print("时间序列不连贯，缺失的月份：",
               [x.strftime('%Y-%m') for x in missing_months.tolist()])
 
-        if (len(missing_months) > 4):
+        if (len(missing_months) > 100):
             print("缺失的月份太多，无法填充")
         elif len(missing_months == 3) and contiguous_month_index(missing_months).empty:
             print("缺失的月份为连续3个，不建议填充")
