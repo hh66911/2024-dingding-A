@@ -6,24 +6,59 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
 
 
 class MyScaler:
-    def __init__(self):
+    def __init__(self, use_diff=False):
         import sklearn.preprocessing
         self.sklearn_scaler = sklearn.preprocessing.RobustScaler()
+        self.use_diff = use_diff
+        self.has_fit = False
 
-    def fit_transform(self, data):
-        data = np.log(1 + data)
-        data = self.sklearn_scaler.fit_transform(data)
-        return data
+    def fit_transform(self, series):
+        return self.transform(series, is_fit=True)
 
-    def transform(self, data):
-        data = np.log(1 + data)
-        data = self.sklearn_scaler.transform(data)
-        return data
+    def transform(self, series, is_fit=False):
+        if not is_fit and not self.has_fit:
+            raise ValueError("没有拟合数据")
+        else:
+            self.has_fit = True
 
-    def inverse_transform(self, data):
-        data = self.sklearn_scaler.inverse_transform(data)
-        data = np.exp(data) - 1
-        return data
+        if is_fit:
+            self.monthly_averages = series.groupby(series.index.month).mean()
+
+        for month in range(1, 13):
+            month_mask = series.index.month == month
+            month_avg = self.monthly_averages.loc[month]
+            series[month_mask] = series[month_mask] - month_avg
+
+        if is_fit:
+            data = self.sklearn_scaler.fit_transform(
+                series.values.reshape(-1, 1)).reshape(-1)
+            self.origin = series.values[0]
+        else:
+            data = self.sklearn_scaler.transform(
+                series.values.reshape(-1, 1)).reshape(-1)
+
+        if self.use_diff:
+            data = np.diff(data)
+
+        series = pd.Series(data, index=series.index)
+
+        return series
+
+    def inverse_transform(self, series):
+        data = series.values
+
+        if self.use_diff:
+            data = np.cumsum(np.append(self.origin, data))
+
+        data = self.sklearn_scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+
+        for month in range(1, 13):
+            month_mask = series.index.month == month
+            month_avg = self.monthly_averages.loc[month]
+            data[month_mask] = data[month_mask] + month_avg
+
+        return pd.Series(data, index=series.index)
 
 
 def fill_series_full(series):
@@ -103,14 +138,13 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         print("时间序列连贯")
 
     if filter_early:
-        series = series[series.index >= '2014-01']
+        series = series[series.index >= '2014-02']
 
     if scale:
         # 创建 Scaler 的实例
         scaler = MyScaler()
         # 使用 fit_transform 方法来拟合数据并转换它
-        normalized_data = scaler.fit_transform(
-            series.values.reshape(-1, 1)).reshape(-1)
+        normalized_data = scaler.fit_transform(series)
         series = pd.Series(normalized_data, index=series.index)
         return series, scaler
     else:
@@ -177,6 +211,37 @@ def gen_xgboost_data(series, feature_length=12):
 
         # 将年份和月份添加到特征向量中
         feature_vector = sales_features + [year_feature, month_feature]
+
+        # 添加到特征集中
+        features.append(feature_vector)
+
+        # 添加目标销量
+        targets.append(sales_df['y'].iloc[i])
+
+    # 将特征和目标转换为numpy数组
+    features = np.array(features)
+    targets = np.array(targets)
+
+    return features, targets
+
+
+def gen_xgboost_data1(series, feature_length=12):
+    sales_df = series_year_month(series)
+    # 使用前 feature_length 个月的销量作为特征，预测下一个月的销量
+    features = []
+    targets = []
+
+    for i in range(feature_length, len(sales_df)):
+        # 获取销量特征
+        sales_features = sales_df['y'].iloc[i-feature_length:i].tolist()
+
+        # 获取年份和月份特征
+        year_features = sales_df['year'].iloc[i-feature_length:i].tolist()
+        month_features = sales_df['month'].iloc[i-feature_length:i].tolist()
+
+        # 将年份和月份添加到特征向量中
+        feature_vector = sales_features + year_features + \
+            month_features + np.diff(sales_features).tolist()
 
         # 添加到特征集中
         features.append(feature_vector)
@@ -506,9 +571,10 @@ def predict_to_future_xgboost(model, series, scaler=None, months=24, last_months
             results.reshape(-1, 1)).reshape(-1)
         scaled_series = scaler.inverse_transform(
             series.values.reshape(-1, 1)).reshape(-1)
-        results = pd.Series(results, index=pd.date_range(
-            series.index[-last_months], periods=months, freq='M'))
         series = pd.Series(scaled_series, index=series.index)
+
+    results = pd.Series(results, index=pd.date_range(
+        series.index[-last_months], periods=months, freq='M'))
 
     evaluate_model_xgboost(series, results, model)
 
