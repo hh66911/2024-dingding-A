@@ -6,7 +6,7 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
 
 
 class MyScaler:
-    def __init__(self, use_diff=False):
+    def __init__(self, use_diff):
         import sklearn.preprocessing
         self.sklearn_scaler = sklearn.preprocessing.RobustScaler()
         self.use_diff = use_diff
@@ -20,6 +20,8 @@ class MyScaler:
             raise ValueError("没有拟合数据")
         else:
             self.has_fit = True
+
+        series_index = series.index
 
         if is_fit:
             self.monthly_averages = series.groupby(series.index.month).mean()
@@ -39,8 +41,9 @@ class MyScaler:
 
         if self.use_diff:
             data = np.diff(data)
+            series_index = series_index[1:]
 
-        series = pd.Series(data, index=series.index)
+        series = pd.Series(data, index=series_index)
 
         return series
 
@@ -142,10 +145,10 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
 
     if scale:
         # 创建 Scaler 的实例
-        scaler = MyScaler()
+        use_diff = [True, False, False, False, False]
+        scaler = MyScaler(use_diff[file_index - 1])
         # 使用 fit_transform 方法来拟合数据并转换它
-        normalized_data = scaler.fit_transform(series)
-        series = pd.Series(normalized_data, index=series.index)
+        series = scaler.fit_transform(series)
         return series, scaler
     else:
         return series
