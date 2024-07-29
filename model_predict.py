@@ -38,7 +38,7 @@ def read_data_series(filter_early=True, scale=True):
         return series
 
 
-def time_transform(year=None, month=None, ):
+def time_transform(year=None, month=None):
     year = (year - 2014) / 5
     month = (month - 1) / 6
     if year is None:
@@ -46,6 +46,44 @@ def time_transform(year=None, month=None, ):
     if month is None:
         return year
     return np.array((year, month), dtype=np.float32)
+
+
+def series_year_month(series):
+    year_month = np.array([time_transform(year, month)
+                          for year, month in zip(series.index.year, series.index.month)])
+    df = pd.DataFrame(
+        {'y': series.values, 'year': year_month[:, 0], 'month': year_month[:, 1]}, index=series.index)
+    return df
+
+
+def gen_xgboost_data(series, feature_length=12):
+    sales_df = series_year_month(series)
+    # 使用前 feature_length 个月的销量作为特征，预测下一个月的销量
+    features = []
+    targets = []
+
+    for i in range(feature_length, len(sales_df)):
+        # 获取销量特征
+        sales_features = sales_df['y'].iloc[i-feature_length:i].tolist()
+
+        # 获取年份和月份特征
+        year_feature = sales_df['year'].iloc[i]
+        month_feature = sales_df['month'].iloc[i]
+
+        # 将年份和月份添加到特征向量中
+        feature_vector = sales_features + [year_feature, month_feature]
+
+        # 添加到特征集中
+        features.append(feature_vector)
+
+        # 添加目标销量
+        targets.append(sales_df['y'].iloc[i])
+
+    # 将特征和目标转换为numpy数组
+    features = np.array(features)
+    targets = np.array(targets)
+
+    return features, targets
 
 
 def prepare_data(series, last_months=12):
@@ -58,8 +96,16 @@ def prepare_data(series, last_months=12):
 
 
 def evaluate_model(series_origin, series_pred):
-    series_true = series_origin[series_pred.index[0]:]
-    series_pred_cover = series_pred[:len(series_true)]
+    if not series_origin.index.isin(series_pred.index).any():
+        print("预测的数据与已知无重合，不进行评估")
+        plt.figure(figsize=(10, 6))
+        plt.plot(series_pred, label='预测值')
+        plt.show()
+        return
+
+    series_true = series_origin[series_origin.index.isin(series_pred.index)]
+    series_pred_cover = series_pred[series_pred.index.isin(
+        series_origin.index)]
 
     mse = mean_squared_error(series_true, series_pred_cover)
     mae = mean_absolute_error(series_true, series_pred_cover)
@@ -72,10 +118,20 @@ def evaluate_model(series_origin, series_pred):
     print(f'MAPE: {mape:.2f}')
 
     plt.figure(figsize=(10, 6))
-    plt.plot(series_true, label='True')
-    plt.plot(series_pred, label='Predicted')
+    plt.plot(series_true, label='真实值')
+    plt.plot(series_pred, label='预测值')
     plt.legend()
     plt.show()
+
+
+def evaluate_model_xgboost(series_origin, series_pred, model):
+    from xgboost import plot_importance
+    # 绘制特征重要性
+    plt.figure(figsize=(12, 6))
+    plot_importance(model, ax=plt.gca())
+    plt.show()
+
+    evaluate_model(series_origin, series_pred)
 
 
 def evaluate_model_prophet(series_test, df_pred):
@@ -206,6 +262,43 @@ def predict_to_future_prophet(model, series, scaler=None, months=24):
     evaluate_model(series_test, y_pred)
 
     return forecast
+
+
+def predict_to_future_xgboost(model, series, scaler=None, months=24, last_months=12):
+    feature_length = len(model.feature_importances_) - 2
+    features, _ = gen_xgboost_data(series, feature_length=feature_length)
+
+    input_data = features[-last_months]
+    year_next = series.index[-last_months].year
+    month_next = series.index[-last_months].month - 1
+
+    results = np.array([])
+    # 预测和评估
+    for _ in range(months):
+        # 预测下一个月的销量
+        y_pred = model.predict(input_data.reshape(1, -1)).item()
+
+        # 将预测结果添加到结果列表中
+        results = np.append(results, y_pred)
+
+        # 更新输入数据
+        input_data[:feature_length] = np.append(
+            input_data[1:feature_length], y_pred)
+        input_data[feature_length:] = time_transform(year_next, month_next + 1)
+
+    year_next += 1 if month_next == 11 else 0
+    month_next = (month_next + 1) % 12
+
+    if scaler is not None:
+        results = scaler.inverse_transform(
+            results.reshape(-1, 1)).reshape(-1)
+        scaled_series = scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+        results = pd.Series(results, index=pd.date_range(
+            series.index[-last_months], periods=months, freq='M'))
+        series = pd.Series(scaled_series, index=series.index)
+
+    evaluate_model_xgboost(series, results, model)
 
 
 def _find_best_param_worker(series, order, seasonal_order):

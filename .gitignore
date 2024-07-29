@@ -3,3 +3,5 @@ __pycache__/
 *.xlsx
 *.pdf
 *.pkl
+unit_test.ipynb
+multiprocess_test.py
