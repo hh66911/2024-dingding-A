@@ -5,14 +5,32 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
                              r2_score, mean_absolute_percentage_error)
 
 
-def read_data_series(filter_early=True, scale=True):
+def read_data_series(filter_early=True, scale=True, file_index=1):
     # 读取Excel文件
-    df = pd.read_excel('A1.xlsx', usecols=['月份', '销量（箱）', '金额（元）'])
+    df = pd.read_excel(f'A{file_index}.xlsx', usecols=['月份', '销量（箱）', '金额（元）'])
     # 去掉无数值的行
     df.dropna(inplace=True)
 
     # 月份的格式为 yyyymm
     df.set_index('月份', inplace=True)
+
+    # 确保月份是字符串类型，并且是 yyyymm 格式
+    original_index = df.index.astype(str)
+
+    # 将月份转换为 pandas 的 Period 类型
+    original_index = pd.PeriodIndex(original_index, freq='M')
+
+    # 生成一个完整的月份范围
+    start_month = original_index.min()
+    end_month = original_index.max()
+    full_range = pd.period_range(start=start_month, end=end_month, freq='M')
+
+    # 检查是否有缺失的月份
+    missing_months = full_range.difference(original_index)
+    if not missing_months.empty:
+        print("时间序列不连贯，缺失的月份：", missing_months)
+    else:
+        print("时间序列连贯")
 
     if filter_early:
         df = df[df.index >= 201401]
@@ -191,6 +209,7 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
             print(f'Epoch [{epoch+1}/{epochs}], Learn Rate: {scheduler.get_last_lr()[0]:.4e}, ' +
                   f'Training Loss: {train_loss.item():.4f}, Validation Loss: {avg_val_loss:.4f}')
 
+    print('Best Validation Loss:', best_val_loss)
     torch.save(best_model_params, save_path,
                _use_new_zipfile_serialization=False)
 
