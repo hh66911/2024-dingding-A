@@ -5,55 +5,122 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
                              r2_score, mean_absolute_percentage_error)
 
 
+def fill_series_full(series):
+    # 计算每个月份的平均值（忽略NaN），并存储在一个Series中
+    monthly_averages = series.groupby(series.index.month).mean()
+    print('月份平均：')
+    print(monthly_averages)
+
+    # 创建一个新的DataFrame来存储完整的时间序列
+    start_month = series.index.min()
+    end_month = series.index.max()
+    full_range = pd.date_range(
+        start=start_month, end=end_month, freq='M')
+    series_full = pd.Series(index=full_range)
+
+    # 使用原始 series 中的数据填充新 series 的对应位置
+    series_full.update(series)
+
+    # 填充缺失值：对于每个月份，使用该月份的平均值填充缺失值
+    for month in range(1, 13):
+        month_mask = series_full.index.month == month
+        missing_values = series_full.loc[month_mask].isna()
+        # 从monthly_averages中获取对应月份的平均值
+        month_avg = monthly_averages.loc[month]
+        # 使用对应月份的平均值填充缺失值
+        if missing_values.any():
+            series_full[missing_values.index[missing_values]] = month_avg
+
+    return series_full
+
+
+def fix_series_index(series):
+    # 确保月份是字符串类型，并且是 yyyymm 格式
+    series.index = series.index.astype(str)
+    # 将月份转换为 pandas 的 Period 类型
+    series.index = pd.to_datetime(
+        series.index, format='%Y%m') + pd.offsets.MonthEnd(0)
+    return series
+
+
+def contiguous_month_index(indices):
+    # 生成一个完整的月份范围
+    start_month = indices.min()
+    end_month = indices.max()
+    full_range = pd.date_range(start=start_month, end=end_month, freq='M')
+    # 检查是否有缺失的月份
+    missing_months = full_range.difference(indices)
+    return missing_months
+
+
 def read_data_series(filter_early=True, scale=True, file_index=1):
     # 读取Excel文件
-    df = pd.read_excel(f'A{file_index}.xlsx', usecols=['月份', '销量（箱）', '金额（元）'])
+    df = pd.read_excel(f'A{file_index}.xlsx', usecols=['月份', '销量（箱）'])
     # 去掉无数值的行
     df.dropna(inplace=True)
 
     # 月份的格式为 yyyymm
     df.set_index('月份', inplace=True)
 
-    # 确保月份是字符串类型，并且是 yyyymm 格式
-    original_index = df.index.astype(str)
+    series = pd.Series(df['销量（箱）'], index=df.index)
+    series = fix_series_index(series)
 
-    # 将月份转换为 pandas 的 Period 类型
-    original_index = pd.PeriodIndex(original_index, freq='M')
+    missing_months = contiguous_month_index(series.index)
 
-    # 生成一个完整的月份范围
-    start_month = original_index.min()
-    end_month = original_index.max()
-    full_range = pd.period_range(start=start_month, end=end_month, freq='M')
-
-    # 检查是否有缺失的月份
-    missing_months = full_range.difference(original_index)
     if not missing_months.empty:
-        print("时间序列不连贯，缺失的月份：", missing_months)
+        print("时间序列不连贯，缺失的月份：",
+              [x.strftime('%Y-%m') for x in missing_months.tolist()])
+
+        if (len(missing_months) > 4):
+            print("缺失的月份太多，无法填充")
+        elif len(missing_months == 3) and contiguous_month_index(missing_months).empty:
+            print("缺失的月份为连续3个，不建议填充")
+        else:
+            print('即将填充缺失的月份')
+            series = fill_series_full(series)
     else:
         print("时间序列连贯")
 
     if filter_early:
-        df = df[df.index >= 201401]
-        index = pd.date_range(start='2014-01', periods=len(df), freq='M')
-    else:
-        index = pd.date_range(start='2011-01', periods=len(df), freq='M')
-
-    # 将数据转换为NumPy数组
-    data_array = df.values
-
-    data = data_array[:, 0]  # 选择销量数据
+        series = series[series.index >= '2014-01']
 
     if scale:
-        from sklearn.preprocessing import RobustScaler
-        # 创建 MinMaxScaler 的实例
-        scaler = RobustScaler()
+        import sklearn.preprocessing as learnpre
+        # 创建 Scaler 的实例
+        scaler = learnpre.RobustScaler()
         # 使用 fit_transform 方法来拟合数据并转换它
-        normalized_data = scaler.fit_transform(data.reshape(-1, 1)).reshape(-1)
-        series = pd.Series(normalized_data, index=index)
+        normalized_data = scaler.fit_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+        series = pd.Series(normalized_data, index=series.index)
         return series, scaler
     else:
-        series = pd.Series(data, index=index)
         return series
+
+
+def plot_series_info(series, scaler=None):
+    # 指定支持中文的字体，例如SimHei或者Microsoft YaHei
+    plt.rcParams["font.sans-serif"] = ["SimHei"]
+    plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
+    from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+    if scaler is not None:
+        series = pd.Series(scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1), index=series.index)
+
+    # 绘制时间序列的折线图
+    plt.figure(figsize=(12, 6))
+    plt.plot(series)
+    plt.title('销量时间序列')
+    plt.xlabel('时间')
+    plt.ylabel('销量')
+    plt.show()
+
+    # 绘制时间序列的自相关性和偏自相关性图
+    fig, ax = plt.subplots(2, 1, figsize=(12, 8))
+    plot_acf(series, ax=ax[0], lags=24)
+    plot_pacf(series, ax=ax[1], lags=24)
+    plt.show()
 
 
 def time_transform(year=None, month=None):
@@ -148,7 +215,7 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
 
     # 划分训练集和测试集
     X_train, X_test, y_train, y_test = train_test_split(
-        features, targets, test_size=last_months/features.shape[0])
+        features, targets, test_size=last_months/features.shape[0], shuffle=False)
     X_train, X_test, y_train, y_test = map(
         lambda x: x.to(device), (X_train, X_test, y_train, y_test))
 
@@ -238,6 +305,7 @@ def evaluate_model(series_origin, series_pred):
 
     if not series_origin.index.isin(series_pred.index).any():
         print("预测的数据与已知无重合，不进行评估")
+        print(series_pred, series_origin)
         plt.figure(figsize=(10, 6))
         plt.plot(series_pred, label='预测值')
         plt.show()
