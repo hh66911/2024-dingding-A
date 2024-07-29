@@ -143,6 +143,46 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         return series
 
 
+def read_data_series_filter(filter_early='2016-01', scale=True, file_index=1):
+    # 读取Excel文件
+    df = pd.read_excel(f'A{file_index}.xlsx', usecols=['月份', '销量（箱）'])
+    # 去掉无数值的行
+    df.dropna(inplace=True)
+
+    # 月份的格式为 yyyymm
+    df.set_index('月份', inplace=True)
+
+    series = pd.Series(df['销量（箱）'], index=df.index)
+    series = fix_series_index(series)
+
+    missing_months = contiguous_month_index(series.index)
+
+    if not missing_months.empty:
+        print("时间序列不连贯，缺失的月份：",
+              [x.strftime('%Y-%m') for x in missing_months.tolist()])
+
+        if (len(missing_months) > 4):
+            print("缺失的月份太多，无法填充")
+        elif len(missing_months == 3) and contiguous_month_index(missing_months).empty:
+            print("缺失的月份为连续3个，不建议填充")
+        else:
+            print('即将填充缺失的月份')
+            series = fill_series_full(series)
+    else:
+        print("时间序列连贯")
+
+    series = series[series.index >= filter_early]
+
+    if scale:
+        # 创建 Scaler 的实例
+        scaler = MyScaler()
+        # 使用 fit_transform 方法来拟合数据并转换它
+        series = scaler.fit_transform(series)
+        return series, scaler
+    else:
+        return series
+
+
 def plot_series_info(series, scaler=None):
     # 指定支持中文的字体，例如SimHei或者Microsoft YaHei
     plt.rcParams["font.sans-serif"] = ["SimHei"]
@@ -279,12 +319,12 @@ def gen_rnn_dataset(series, feature_length=12):
     return features, targets
 
 
-def train_rnn_model(model_type, model_params, series, epochs=1000,
+def train_rnn_model(model_type, model_params, series, epochs=1000, continue_train=False, learn_rate=1e-3,
                     feature_length=12, test_size=12, test_shuffle=True, random_state=None, device='cuda'):
     import torch
     import torch.nn as nn
     from torch.utils.data import TensorDataset, DataLoader
-    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    import torch.optim.lr_scheduler as lr_scheduler
     from sklearn.model_selection import train_test_split
 
     features, targets = gen_rnn_dataset(series, feature_length)
@@ -306,11 +346,15 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
     print("结果保存到：", save_path)
 
     model = model_type(**model_params)
+    if continue_train:
+        model.load_state_dict(torch.load(save_path))
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = ReduceLROnPlateau(
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learn_rate)
+    scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', patience=10, factor=0.5)
-
+    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer,
+    #                                            eta_min=1e-6, T_max=epochs // 3)
+#
     # 初始化最佳模型参数和最佳验证损失
     best_model_params = model.state_dict()
     best_val_loss = float('inf')
@@ -332,6 +376,7 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
         train_loss_list.append(train_loss.item())
 
         scheduler.step(train_loss)
+        # scheduler.step()
 
         if (epoch + 1) % 50 == 0:
             # 在验证集上计算损失并保存最佳模型
@@ -559,6 +604,121 @@ def predict_to_future_xgboost(model, series, scaler=None, months=24, last_months
         series = scaler.inverse_transform(series)
 
     return results, evaluate_model_xgboost(series, results, model)
+
+
+def predict_to_future_xgboost1(model, series, scaler=None, months=24, last_months=12):
+    feature_length = (len(model.feature_importances_) + 1) // 4
+    features, _ = gen_xgboost_data1(series, feature_length=feature_length)
+
+    input_data = features[-last_months]
+    year_next = series.index[-last_months].year
+    month_next = series.index[-last_months].month - 1
+
+    results = np.array([])
+    # 预测和评估
+    for _ in range(months):
+        # 预测下一个月的销量
+        y_pred = model.predict(input_data.reshape(1, -1)).item()
+
+        # 将预测结果添加到结果列表中
+        results = np.append(results, y_pred)
+
+        # 更新输入数据
+        input_data[:feature_length] = np.append(
+            input_data[1:feature_length], y_pred)
+        time_next = time_transform(year_next, month_next + 1)
+        input_data[feature_length:feature_length * 2] = np.append(
+            input_data[feature_length+1:feature_length * 2], time_next[0])
+        input_data[feature_length * 2:feature_length * 3] = np.append(
+            input_data[feature_length * 2 + 1:feature_length * 3], time_next[1])
+        input_data[feature_length * 3:] = np.diff(input_data[:feature_length])
+
+    year_next += 1 if month_next == 11 else 0
+    month_next = (month_next + 1) % 12
+
+    results = pd.Series(results, index=pd.date_range(
+        series.index[-last_months], periods=months, freq='M'))
+
+    if scaler is not None:
+        results = scaler.inverse_transform(results)
+        series = scaler.inverse_transform(series)
+
+    return results, evaluate_model(series, results)
+
+
+def predict_to_future_lgbm(model, series, scaler=None, months=24, last_months=12):
+    feature_length = len(model.feature_importances_) - 2
+    features, _ = gen_xgboost_data(series, feature_length=feature_length)
+
+    input_data = features[-last_months]
+    year_next = series.index[-last_months].year
+    month_next = series.index[-last_months].month - 1
+
+    results = np.array([])
+    # 预测和评估
+    for _ in range(months):
+        # 预测下一个月的销量
+        y_pred = model.predict(input_data.reshape(1, -1)).item()
+
+        # 将预测结果添加到结果列表中
+        results = np.append(results, y_pred)
+
+        # 更新输入数据
+        input_data[:feature_length] = np.append(
+            input_data[1:feature_length], y_pred)
+        input_data[feature_length:] = time_transform(year_next, month_next + 1)
+
+    year_next += 1 if month_next == 11 else 0
+    month_next = (month_next + 1) % 12
+
+    results = pd.Series(results, index=pd.date_range(
+        series.index[-last_months], periods=months, freq='M'))
+
+    if scaler is not None:
+        results = scaler.inverse_transform(results)
+        series = scaler.inverse_transform(series)
+
+    return results, evaluate_model(series, results)
+
+
+def predict_to_future_lgbm1(model, series, scaler=None, months=24, last_months=12):
+    feature_length = (len(model.feature_importances_) + 1) // 4
+    features, _ = gen_xgboost_data1(series, feature_length=feature_length)
+
+    input_data = features[-last_months]
+    year_next = series.index[-last_months].year
+    month_next = series.index[-last_months].month - 1
+
+    results = np.array([])
+    # 预测和评估
+    for _ in range(months):
+        # 预测下一个月的销量
+        y_pred = model.predict(input_data.reshape(1, -1)).item()
+
+        # 将预测结果添加到结果列表中
+        results = np.append(results, y_pred)
+
+        # 更新输入数据
+        input_data[:feature_length] = np.append(
+            input_data[1:feature_length], y_pred)
+        time_next = time_transform(year_next, month_next + 1)
+        input_data[feature_length:feature_length * 2] = np.append(
+            input_data[feature_length+1:feature_length * 2], time_next[0])
+        input_data[feature_length * 2:feature_length * 3] = np.append(
+            input_data[feature_length * 2 + 1:feature_length * 3], time_next[1])
+        input_data[feature_length * 3:] = np.diff(input_data[:feature_length])
+
+    year_next += 1 if month_next == 11 else 0
+    month_next = (month_next + 1) % 12
+
+    results = pd.Series(results, index=pd.date_range(
+        series.index[-last_months], periods=months, freq='M'))
+
+    if scaler is not None:
+        results = scaler.inverse_transform(results)
+        series = scaler.inverse_transform(series)
+
+    return results, evaluate_model(series, results)
 
 
 def _find_best_param_worker(series, order, seasonal_order):
