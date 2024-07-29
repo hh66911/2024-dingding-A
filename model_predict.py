@@ -184,7 +184,7 @@ def predict_to_future_prophet(model, series, scaler=None, months=24):
     evaluate_model(series_test, y_pred)
 
 
-def _find_best_param_worker(series, seasonal_order, order, progress_list, index):
+def _find_best_param_worker(series, order, seasonal_order):
     import warnings
     from statsmodels.tsa.statespace.sarimax import SARIMAX
     warnings.filterwarnings('ignore')
@@ -193,46 +193,25 @@ def _find_best_param_worker(series, seasonal_order, order, progress_list, index)
                               seasonal_order=seasonal_order)  # 创建 SARIMA 模型对象
         model_arima_fit = model_arima.fit(disp=False)
     except:
-        return order, np.inf
-    # 更新共享进度列表
-    progress_list[index] = 'Done'
-    return order, model_arima_fit.aic
+        return order, seasonal_order, np.inf
+    return order, seasonal_order, model_arima_fit.aic
 
 
-def find_best_param(series, combined_param, process_num=4):
+def find_best_param(series, combined_param, process_num=8):
     import warnings
     from tqdm import tqdm
     import multiprocessing
 
-    manager = multiprocessing.Manager()
-    progress_list = manager.list(['Pending'] * len(combined_param))
-
     results = []
 
     with multiprocessing.Pool(processes=process_num) as pool:
-        tasks = [pool.apply_async(_find_best_param_worker, args=(series, seasonal_order, order, progress_list, index))
-                 for index, (order, seasonal_order) in enumerate(combined_param)]
+        tasks = [pool.apply_async(_find_best_param_worker, args=(series, order, seasonal_order))
+                 for order, seasonal_order in combined_param]
 
         # 等待所有任务完成，并实时打印进度
-        '''next_print_string = print_string = 'Progress: ' + \
-            ' '.join(progress_list)
-        while any(not t.ready() for t in tasks):
-            print(next_print_string, end='\r', flush=True)
-            next_print_string = 'Progress: ' + ' '.join(progress_list)
-            if len(next_print_string) < len(print_string):
-                next_print_string += ' ' * \
-                    (len(print_string) - len(next_print_string))
-            print_string = next_print_string
-            time.sleep(0.5)'''
         # 使用tqdm显示进度
         for index, task in enumerate(tqdm(tasks, total=len(tasks), desc='Progress')):
             task.wait()  # 等待任务完成以更新进度条
-            # 实际上在_find_best_param_worker中已经更新，这里只是为了同步显示
-            # progress_list[index] = 'Done'
-            # tqdm.write(f'Progress: {" ".join(progress_list)}')  # 更新进度条后的描述
-
-        # 打印最终结果并换行
-        # print('\nFinal Progress:', ' '.join(progress_list))
 
         for task in tasks:
             results.append(task.get())
