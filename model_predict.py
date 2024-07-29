@@ -6,10 +6,9 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
 
 
 class MyScaler:
-    def __init__(self, use_diff):
+    def __init__(self, ):
         import sklearn.preprocessing
         self.sklearn_scaler = sklearn.preprocessing.RobustScaler()
-        self.use_diff = use_diff
         self.has_fit = False
 
     def fit_transform(self, series):
@@ -39,20 +38,11 @@ class MyScaler:
             data = self.sklearn_scaler.transform(
                 series.values.reshape(-1, 1)).reshape(-1)
 
-        if self.use_diff:
-            data = np.diff(data)
-            series_index = series_index[1:]
-
         series = pd.Series(data, index=series_index)
 
         return series
 
     def inverse_transform(self, series):
-        data = series.values
-
-        if self.use_diff:
-            data = np.cumsum(np.append(self.origin, data))
-
         data = self.sklearn_scaler.inverse_transform(
             series.values.reshape(-1, 1)).reshape(-1)
 
@@ -145,8 +135,7 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
 
     if scale:
         # 创建 Scaler 的实例
-        use_diff = [True, False, False, False, False]
-        scaler = MyScaler(use_diff[file_index - 1])
+        scaler = MyScaler()
         # 使用 fit_transform 方法来拟合数据并转换它
         series = scaler.fit_transform(series)
         return series, scaler
@@ -162,8 +151,7 @@ def plot_series_info(series, scaler=None):
     from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
     if scaler is not None:
-        series = pd.Series(scaler.inverse_transform(
-            series.values.reshape(-1, 1)).reshape(-1), index=series.index)
+        series = scaler.inverse_transform(series)
 
     # 绘制时间序列的折线图
     plt.figure(figsize=(12, 6))
@@ -292,7 +280,7 @@ def gen_rnn_dataset(series, feature_length=12):
 
 
 def train_rnn_model(model_type, model_params, series, epochs=1000,
-                    feature_length=12, last_months=12, device='cuda'):
+                    feature_length=12, test_size=12, test_shuffle=True, random_state=None, device='cuda'):
     import torch
     import torch.nn as nn
     from torch.utils.data import TensorDataset, DataLoader
@@ -303,7 +291,7 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
 
     # 划分训练集和测试集
     X_train, X_test, y_train, y_test = train_test_split(
-        features, targets, test_size=last_months/features.shape[0], shuffle=False)
+        features, targets, test_size=test_size/features.shape[0], shuffle=test_shuffle, random_state=random_state)
     X_train, X_test, y_train, y_test = map(
         lambda x: x.to(device), (X_train, X_test, y_train, y_test))
 
@@ -419,15 +407,19 @@ def evaluate_model(series_origin, series_pred):
     plt.legend()
     plt.show()
 
+    return mse, mae, r2, mape
+
 
 def evaluate_model_xgboost(series_origin, series_pred, model):
+    ev = evaluate_model(series_origin, series_pred)
+
     from xgboost import plot_importance
     # 绘制特征重要性
     plt.figure(figsize=(12, 6))
     plot_importance(model, ax=plt.gca())
     plt.show()
 
-    evaluate_model(series_origin, series_pred)
+    return ev
 
 
 def evaluate_model_prophet(series_test, df_pred):
@@ -480,19 +472,17 @@ def predict_to_future_rnn(model, series, scaler=None, months=24, last_months=12,
     # 将结果转换为numpy数组
     result = np.array(result)
 
-    if scaler is not None:
-        result = scaler.inverse_transform(result.reshape(-1, 1)).reshape(-1)
-        scaled_series = scaler.inverse_transform(
-            series.values.reshape(-1, 1)).reshape(-1)
-        series = pd.Series(scaled_series, index=series.index)
-
     pred_index = pd.date_range(
         start=series.index[-last_months], periods=months, freq='M')
     series_pred = pd.Series(result, index=pred_index)
 
+    if scaler is not None:
+        series_pred = scaler.inverse_transform(series_pred)
+        series = scaler.inverse_transform(series)
+
     evaluate_model(series, series_pred)
 
-    return result
+    return series_pred
 
 
 def predict_to_future_arima(model, series, scaler=None, months=24, last_months=12):
@@ -502,12 +492,8 @@ def predict_to_future_arima(model, series, scaler=None, months=24, last_months=1
     forecast: pd.Series = model.predict(start=forecast_start, end=forecast_end)
 
     if scaler is not None:
-        scaled_forecast = scaler.inverse_transform(
-            forecast.values.reshape(-1, 1)).reshape(-1)
-        scaled_series = scaler.inverse_transform(
-            series.values.reshape(-1, 1)).reshape(-1)
-        forecast = pd.Series(scaled_forecast, index=forecast.index)
-        series = pd.Series(scaled_series, index=series.index)
+        forecast = scaler.inverse_transform(forecast)
+        series = scaler.inverse_transform(series)
 
     evaluate_model(series, forecast)
 
@@ -532,12 +518,8 @@ def predict_to_future_prophet(model, series, scaler=None, months=24):
     y_pred_index = y_pred.index
 
     if scaler is not None:
-        y_pred = scaler.inverse_transform(
-            y_pred.values.reshape(-1, 1)).reshape(-1)
-        series_test = scaler.inverse_transform(
-            series_test.values.reshape(-1, 1)).reshape(-1)
-        y_pred = pd.Series(y_pred, index=y_pred_index)
-        series_test = pd.Series(series_test, index=series_test_index)
+        y_pred = scaler.inverse_transform(y_pred)
+        series_test = scaler.inverse_transform(series_test)
 
     evaluate_model(series_test, y_pred)
 
@@ -569,17 +551,14 @@ def predict_to_future_xgboost(model, series, scaler=None, months=24, last_months
     year_next += 1 if month_next == 11 else 0
     month_next = (month_next + 1) % 12
 
-    if scaler is not None:
-        results = scaler.inverse_transform(
-            results.reshape(-1, 1)).reshape(-1)
-        scaled_series = scaler.inverse_transform(
-            series.values.reshape(-1, 1)).reshape(-1)
-        series = pd.Series(scaled_series, index=series.index)
-
     results = pd.Series(results, index=pd.date_range(
         series.index[-last_months], periods=months, freq='M'))
 
-    evaluate_model_xgboost(series, results, model)
+    if scaler is not None:
+        results = scaler.inverse_transform(results)
+        series = scaler.inverse_transform(series)
+
+    return results, evaluate_model_xgboost(series, results, model)
 
 
 def _find_best_param_worker(series, order, seasonal_order):
