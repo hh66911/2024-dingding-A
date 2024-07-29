@@ -86,7 +86,116 @@ def gen_xgboost_data(series, feature_length=12):
     return features, targets
 
 
-def prepare_data(series, last_months=12):
+def gen_rnn_dataset(series, feature_length=12):
+    import torch
+    sales_df = series_year_month(series)
+    # 使用前 feature_length 个月的销量作为特征，预测下一个月的销量
+    features = []
+    targets = []
+
+    for i in range(feature_length, len(sales_df)):
+        # 获取销量特征
+        sales_features = sales_df['y'].iloc[i-feature_length:i].tolist()
+
+        # 获取年份和月份特征
+        year_features = sales_df['year'].iloc[i-feature_length:i].tolist()
+        month_features = sales_df['month'].iloc[i-feature_length:i].tolist()
+
+        # 将年份和月份添加到特征向量中
+        feature_vector = [sales_features, year_features, month_features]
+
+        # 添加到特征集中
+        features.append(feature_vector)
+
+        # 添加目标销量
+        targets.append(sales_df['y'].iloc[i])
+
+    # 将特征和目标转换为numpy数组
+    features = torch.tensor(features, dtype=torch.float32)
+    features = features.permute(0, 2, 1)
+    targets = torch.tensor(targets, dtype=torch.float32)
+
+    return features, targets
+
+
+def train_rnn_model(model_type, model_params, series, epochs=1000,
+                    feature_length=12, last_months=12, device='cuda'):
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import TensorDataset, DataLoader
+    from torch.optim.lr_scheduler import ReduceLROnPlateau
+    from sklearn.model_selection import train_test_split
+
+    features, targets = gen_rnn_dataset(series, feature_length)
+
+    # 划分训练集和测试集
+    X_train, X_test, y_train, y_test = train_test_split(
+        features, targets, test_size=last_months/features.shape[0])
+    X_train, X_test, y_train, y_test = map(
+        lambda x: x.to(device), (X_train, X_test, y_train, y_test))
+
+    train_dataset = TensorDataset(X_train, y_train)
+    train_dataloader = DataLoader(train_dataset, batch_size=12)
+    test_dataset = TensorDataset(X_test, y_test)
+    test_dataloader = DataLoader(test_dataset, batch_size=12)
+
+    model_name = str(model_type).split('.')[-1].split('\'')[0]
+    save_path = model_name + "_best.pth"
+    print("训练", model_name, "模型")
+    print("结果保存到：", save_path)
+
+    model = model_type(**model_params)
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', patience=10, factor=0.5)
+
+    # 初始化最佳模型参数和最佳验证损失
+    best_model_params = model.state_dict()
+    best_val_loss = float('inf')
+
+    model.to(device)
+    # 5.2 训练模型
+    train_loss_list = []
+    val_loss_list = []
+    for epoch in range(epochs):
+        train_loss = 0
+        for batch_input, batch_target in train_dataloader:
+            optimizer.zero_grad()
+            output = model(batch_input)
+            loss = criterion(output.squeeze(), batch_target)
+            train_loss += loss
+            loss.backward()
+            optimizer.step()
+        train_loss = train_loss/len(train_dataloader)
+        train_loss_list.append(train_loss.item())
+
+        scheduler.step(train_loss)
+
+        if (epoch + 1) % 50 == 0:
+            # 在验证集上计算损失并保存最佳模型
+            with torch.no_grad():
+                val_losses = []
+                for val_batch_input, val_batch_target in test_dataloader:
+                    val_output = model(val_batch_input)
+                    val_loss = criterion(
+                        val_output.squeeze(), val_batch_target)
+                    val_losses.append(val_loss.item())
+                avg_val_loss = np.mean(val_losses)
+                val_loss_list.append(avg_val_loss)
+
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    best_model_params = model.state_dict()
+
+            print(f'Epoch [{epoch+1}/{epochs}], Learn Rate: {scheduler.get_last_lr()[0]:.4e}, ' +
+                  f'Training Loss: {train_loss.item():.4f}, Validation Loss: {avg_val_loss:.4f}')
+
+    torch.save(best_model_params, save_path,
+               _use_new_zipfile_serialization=False)
+
+
+def _prepare_data_rnn(series, last_months=12):
     last_date = series.index[:-last_months]
     data = series.values[:-last_months]
     y_true = series.values[-last_months:]
@@ -144,7 +253,8 @@ def evaluate_model_prophet(series_test, df_pred):
 def predict_to_future_lstm(model, series, months, scaler=None, feature_length=12, last_months=12):
     import torch
     # 准备初始输入
-    data, data_years, data_months, y_true = prepare_data(series, last_months)
+    data, data_years, data_months, y_true = _prepare_data_rnn(
+        series, last_months)
     year_next = data_years[-1]
     month_next = data_months[-1]
 
@@ -219,23 +329,7 @@ def predict_to_future_arima(model, series, scaler=None, months=24, last_months=1
 
 
 def predict_to_future_es(model, series, scaler=None, months=24, last_months=12):
-    # 使用 predict 方法来预测最后12个和未来12个月的销量
-    forecast_start = series.index[-last_months]
-    forecast_end = forecast_start + pd.DateOffset(months=months)
-
-    forecast = model.predict(start=forecast_start, end=forecast_end)
-
-    if scaler is not None:
-        scaled_forecast = scaler.inverse_transform(
-            forecast.values.reshape(-1, 1)).reshape(-1)
-        scaled_series = scaler.inverse_transform(
-            series.values.reshape(-1, 1)).reshape(-1)
-        forecast = pd.Series(scaled_forecast, index=forecast.index)
-        series = pd.Series(scaled_series, index=series.index)
-
-    evaluate_model(series, forecast)
-
-    return forecast
+    return predict_to_future_arima(model, series, scaler, months, last_months)
 
 
 def predict_to_future_prophet(model, series, scaler=None, months=24):
