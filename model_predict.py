@@ -5,6 +5,27 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error,
                              r2_score, mean_absolute_percentage_error)
 
 
+class MyScaler:
+    def __init__(self):
+        import sklearn.preprocessing
+        self.sklearn_scaler = sklearn.preprocessing.RobustScaler()
+
+    def fit_transform(self, data):
+        data = np.log(1 + data)
+        data = self.sklearn_scaler.fit_transform(data)
+        return data
+
+    def transform(self, data):
+        data = np.log(1 + data)
+        data = self.sklearn_scaler.transform(data)
+        return data
+
+    def inverse_transform(self, data):
+        data = self.sklearn_scaler.inverse_transform(data)
+        data = np.exp(data) - 1
+        return data
+
+
 def fill_series_full(series):
     # 计算每个月份的平均值（忽略NaN），并存储在一个Series中
     monthly_averages = series.groupby(series.index.month).mean()
@@ -85,9 +106,8 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         series = series[series.index >= '2014-01']
 
     if scale:
-        import sklearn.preprocessing as learnpre
         # 创建 Scaler 的实例
-        scaler = learnpre.RobustScaler()
+        scaler = MyScaler()
         # 使用 fit_transform 方法来拟合数据并转换它
         normalized_data = scaler.fit_transform(
             series.values.reshape(-1, 1)).reshape(-1)
