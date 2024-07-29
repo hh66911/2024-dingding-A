@@ -195,6 +195,14 @@ def train_rnn_model(model_type, model_params, series, epochs=1000,
                _use_new_zipfile_serialization=False)
 
 
+def load_rnn_model_best(model_type, model_params):
+    import torch
+    model = model_type(**model_params)
+    model.load_state_dict(torch.load(
+        str(model_type).split('.')[-1].split('\'')[0] + "_best.pth"))
+    return model
+
+
 def _prepare_data_rnn(series, last_months=12):
     last_date = series.index[:-last_months]
     data = series.values[:-last_months]
@@ -205,6 +213,10 @@ def _prepare_data_rnn(series, last_months=12):
 
 
 def evaluate_model(series_origin, series_pred):
+    # 指定支持中文的字体，例如SimHei或者Microsoft YaHei
+    plt.rcParams["font.sans-serif"] = ["SimHei"]
+    plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+
     if not series_origin.index.isin(series_pred.index).any():
         print("预测的数据与已知无重合，不进行评估")
         plt.figure(figsize=(10, 6))
@@ -250,17 +262,14 @@ def evaluate_model_prophet(series_test, df_pred):
     evaluate_model(series_test, series_pred)
 
 
-def predict_to_future_lstm(model, series, months, scaler=None, feature_length=12, last_months=12):
+def predict_to_future_rnn(model, series, scaler=None, months=24, last_months=12, feature_length=12):
     import torch
     # 准备初始输入
-    data, data_years, data_months, y_true = _prepare_data_rnn(
-        series, last_months)
+    data, data_years, data_months, _ = _prepare_data_rnn(series, last_months)
     year_next = data_years[-1]
     month_next = data_months[-1]
 
     # 拼接 data, data_years, data_months
-    if scaler is not None:
-        data = scaler.transform(data.reshape(-1, 1)).reshape(-1)
     input_tensor = torch.from_numpy(data).unsqueeze(0)
     input_tensor = torch.cat(
         (input_tensor, torch.tensor(time_transform(data_years, data_months))))
@@ -298,7 +307,9 @@ def predict_to_future_lstm(model, series, months, scaler=None, feature_length=12
 
     if scaler is not None:
         result = scaler.inverse_transform(result.reshape(-1, 1)).reshape(-1)
-        y_true = scaler.inverse_transform(y_true.reshape(-1, 1)).reshape(-1)
+        scaled_series = scaler.inverse_transform(
+            series.values.reshape(-1, 1)).reshape(-1)
+        series = pd.Series(scaled_series, index=series.index)
 
     pred_index = pd.date_range(
         start=series.index[-last_months], periods=months, freq='M')
