@@ -120,9 +120,9 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         print("时间序列不连贯，缺失的月份：",
               [x.strftime('%Y-%m') for x in missing_months.tolist()])
 
-        if (len(missing_months) > 100):
+        if (len(missing_months) >= 10):
             print("缺失的月份太多，无法填充")
-        elif len(missing_months == 3) and contiguous_month_index(missing_months).empty:
+        elif len(missing_months) < 10 and contiguous_month_index(missing_months).empty:
             print("缺失的月份为连续3个，不建议填充")
         else:
             print('即将填充缺失的月份')
@@ -141,6 +141,44 @@ def read_data_series(filter_early=True, scale=True, file_index=1):
         return series, scaler
     else:
         return series
+
+
+def read_data_series5():
+    # 读取Excel文件
+    df = pd.read_excel('A5.xlsx', usecols=['月份', '销量（箱）'])
+    # 去掉无数值的行
+    df.dropna(inplace=True)
+
+    # 月份的格式为 yyyymm
+    df.set_index('月份', inplace=True)
+
+    series = pd.Series(df['销量（箱）'], index=df.index)
+    series = fix_series_index(series)
+
+    series = series[series.index >= '2014-02']
+    series = series[series.index <= '2018-09']
+
+    missing_months = contiguous_month_index(series.index)
+
+    if not missing_months.empty:
+        print("时间序列不连贯，缺失的月份：",
+              [x.strftime('%Y-%m') for x in missing_months.tolist()])
+
+        if (len(missing_months) >= 10):
+            print("缺失的月份太多，无法填充")
+        elif len(missing_months) < 10 and contiguous_month_index(missing_months).empty:
+            print("缺失的月份为连续3个，不建议填充")
+        else:
+            print('即将填充缺失的月份')
+            series = fill_series_full(series)
+    else:
+        print("时间序列连贯")
+
+    # 创建 Scaler 的实例
+    scaler = MyScaler()
+    # 使用 fit_transform 方法来拟合数据并转换它
+    series = scaler.fit_transform(series)
+    return series, scaler
 
 
 def read_data_series_filter(filter_early='2016-01', scale=True, file_index=1):
@@ -402,11 +440,14 @@ def train_rnn_model(model_type, model_params, series, epochs=1000, continue_trai
                _use_new_zipfile_serialization=False)
 
 
-def load_rnn_model_best(model_type, model_params):
+def load_rnn_model_best(model_type, model_params, file_name=None):
     import torch
     model = model_type(**model_params)
-    model.load_state_dict(torch.load(
-        str(model_type).split('.')[-1].split('\'')[0] + "_best.pth"))
+    if file_name is None:
+        model.load_state_dict(torch.load(
+            str(model_type).split('.')[-1].split('\'')[0] + "_best.pth"))
+    else:
+        model.load_state_dict(torch.load(file_name))
     return model
 
 
@@ -525,9 +566,7 @@ def predict_to_future_rnn(model, series, scaler=None, months=24, last_months=12,
         series_pred = scaler.inverse_transform(series_pred)
         series = scaler.inverse_transform(series)
 
-    evaluate_model(series, series_pred)
-
-    return series_pred
+    return series_pred, evaluate_model(series, series_pred)
 
 
 def predict_to_future_arima(model, series, scaler=None, months=24, last_months=12):

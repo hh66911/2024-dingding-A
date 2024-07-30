@@ -42,7 +42,8 @@ model_parameters = {
 
 # %%
 model = model_predict.load_rnn_model_best(GRUModel, model_parameters)
-results = model_predict.predict_to_future_rnn(
-    model, series, scaler, feature_length=16, last_months=12, months=34) * 11925
+results, _ = model_predict.predict_to_future_rnn(
+    model, series, scaler, feature_length=16, last_months=12, months=34)
 
+results = results * 11925
 results.to_excel("results.xlsx")

@@ -35,7 +35,9 @@ model_parameters = {
 }
 
 model = model_predict.load_rnn_model_best(LSTMModel, model_parameters)
-results = model_predict.predict_to_future_rnn(
-    model, series, scaler, last_months=12) * 24250
+results, _ = model_predict.predict_to_future_rnn(
+    model, series, scaler, last_months=12)
+
+results = results * 11925
 
 results.to_excel('results.xlsx')
